@@ -1,71 +1,381 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <string.h>  // for strcmp, strncpy, strtok, strncmp
 
-LiquidCrystal_I2C lcd(0x27, 20, 4);
-int yesPin = 2;
-int noPin = 3;
-const int num_questions = 5;
-const int string_num = 5;
-const int max_string_length = 25;
-char messages[string_num][max_string_length] = {
-  "Do you like fiction?",
-  "Adventure?",
-  "Romance?",
-  "Question number 1",
-  "Question number 2"
-};
-char answers[num_questions];
+LiquidCrystal_I2C lcd(0x27, 20, 4);  // I2C LCD: 20x4
 
-void setup() {
-  lcd.init();       // Initialize the LCD
-  lcd.backlight();  // Turn on the backlight
-  lcd.clear();      // Clear any previous text
-  Serial.begin(9600);
-  pinMode(yesPin, INPUT_PULLUP);
-  pinMode(noPin, INPUT_PULLUP);
+const int movepin   = 2;
+const int choosePin = 3;
+
+// ----- MENU OPTIONS -----
+
+// First menu: what do you like?
+const char* mainOptions[] = {
+  "Fiction",
+  "Nonfiction"
 };
 
-void loop() {
-  for (int i = 0; i < num_questions; i++) {
-    answers[i] = '?';
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print(messages[i]);
-    while (answers[i] == '?') {
-      int yesState = digitalRead(yesPin);
-      int noState = digitalRead(noPin);
-      if (yesState == LOW && noState == HIGH) {
-        answers[i] = 'Y';
-        lcd.setCursor(0, 1);
-        lcd.print("Correct, I do.");
-        delay(800);
-      } else if (yesState == HIGH && noState == LOW) {
-        answers[i] = 'N';
-        lcd.setCursor(0, 1);
-        lcd.print("Incorrect, I don't.");
-        delay(800);
+// Second menu: fiction categories
+const char* fictionCategories[] = {
+  "Fantasy",
+  "Sci-Fi",
+  "Mystery",
+  "Romance",
+  "Horror"
+};
 
-      } else if (yesState == LOW && noState == LOW) {
-        lcd.setCursor(0, 1);
-        lcd.print("Don't press both!");
-        delay(200);
-        lcd.setCursor(0, 1);
-        lcd.print("                    ");
-      }
+// Second menu: nonfiction categories
+const char* nonFictionCategories[] = {
+  "History",
+  "Science",
+  "Biography",
+  "Self-help"
+};
+
+// To store chosen answers as strings
+const char* selectedMain     = nullptr;
+const char* selectedCategory = nullptr;
+
+// ---------- BOOK STORAGE (configured from website via Serial) ----------
+struct Book {
+  char title[30];     // name of the book
+  char type[12];      // "Fiction" or "Nonfiction"
+  char category[16];  // e.g. "Sci-Fi", "History"
+};
+
+const int MAX_BOOKS = 20;
+Book books[MAX_BOOKS];
+int  numBooks = 0;
+
+// ---------- BOOK HELPERS ----------
+void clearBooks() {
+  numBooks = 0;
+}
+
+// parse "ADD|title|type|category"
+void handleAddCommand(char* line) {
+  if (numBooks >= MAX_BOOKS) return;
+
+  // strtok modifies the string in-place
+  char* cmd = strtok(line, "|");   // "ADD"
+  char* t   = strtok(NULL, "|");   // title
+  char* ty  = strtok(NULL, "|");   // type
+  char* cat = strtok(NULL, "|");   // category
+
+  if (!t || !ty || !cat) return;
+
+  // copy with truncation and null-termination
+  strncpy(books[numBooks].title, t, sizeof(books[numBooks].title) - 1);
+  books[numBooks].title[sizeof(books[numBooks].title) - 1] = '\0';
+
+  strncpy(books[numBooks].type, ty, sizeof(books[numBooks].type) - 1);
+  books[numBooks].type[sizeof(books[numBooks].type) - 1] = '\0';
+
+  strncpy(books[numBooks].category, cat, sizeof(books[numBooks].category) - 1);
+  books[numBooks].category[sizeof(books[numBooks].category) - 1] = '\0';
+
+  numBooks++;
+}
+
+// Build list of book titles matching type + category.
+// Returns how many matches were found (0 if none).
+int buildBookList(const char* type, const char* category,
+                  const char* outTitles[], int maxOut) {
+  int count = 0;
+  for (int i = 0; i < numBooks && count < maxOut; i++) {
+    if (strcmp(books[i].type, type) == 0 &&
+        strcmp(books[i].category, category) == 0) {
+      outTitles[count] = books[i].title;
+      count++;
     }
-    lcd.setCursor(0, 2);
-    lcd.print("Answer: ");
-    lcd.print(answers[i]);
-    delay(1000);
   }
+  return count;
+}
+
+// ---------- WAIT FOR CONFIG OVER SERIAL ----------
+void waitForConfigFromSerial() {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Answers: ");
+  lcd.print("Waiting for config");
+  lcd.setCursor(0, 1);
+  lcd.print("from Web Serial");
+
+  String line;
+
+  while (true) {
+    if (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\n' || c == '\r') {
+        if (line.length() == 0) continue; // skip empty lines
+
+        // make a modifiable C-string copy
+        char buf[80];
+        line.toCharArray(buf, sizeof(buf));
+
+        if (strncmp(buf, "CLEAR", 5) == 0) {
+          clearBooks();
+        } 
+        else if (strncmp(buf, "ADD|", 4) == 0) {
+          handleAddCommand(buf);
+        } 
+        else if (strncmp(buf, "END", 3) == 0) {
+          // Finished receiving config
+          break;
+        }
+
+        line = "";
+      } else {
+        line += c;
+      }
+    }
+  }
+
+  // Show how many books we got
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Config received");
+  lcd.setCursor(0, 1);
+  lcd.print("Books: ");
+  lcd.print(numBooks);
+  delay(1500);
+}
+
+// ---------- Instruction screen ----------
+void showInstructions() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Use buttons:");
 
   lcd.setCursor(0, 1);
-  for (int i = 0; i < num_questions; i++) {
-    lcd.print(answers[i]);
-    lcd.print(' ');
+  lcd.print("Green: move arrow");
+
+  lcd.setCursor(0, 2);
+  lcd.print("Red: choose/next");
+
+  lcd.setCursor(0, 3);
+  lcd.print("Both: back a menu");
+
+  // 1) Make sure both buttons are released first
+  while (digitalRead(movepin) == LOW || digitalRead(choosePin) == LOW) {
+    delay(10);
   }
-  delay(3000);
-};
+
+  // 2) Keep the instructions on screen briefly
+  delay(1000);  // 1 second
+
+  // 3) Wait for a NEW button press to continue
+  while (true) {
+    int downState   = digitalRead(movepin);
+    int selectState = digitalRead(choosePin);
+
+    if (downState == LOW || selectState == LOW) {
+      // wait for all buttons to be released
+      while (digitalRead(movepin) == LOW || digitalRead(choosePin) == LOW) {
+        delay(10);
+      }
+      break;
+    }
+    delay(30);
+  }
+}
+
+// ---------- SCROLLING MENU WITH ARROW HIGHLIGHT ----------
+// allowBack = true  -> pressing BOTH buttons returns -1 (go back)
+// allowBack = false -> both buttons ignored as "back"
+int menuSelectScrollArrow(const char* question, const char* options[], int numOptions, bool allowBack) {
+  if (numOptions <= 0) return -1;
+
+  const int maxVisible = 3;                // rows 1, 2, 3 for options
+  int visibleCount = numOptions < maxVisible ? numOptions : maxVisible;
+
+  int selectionIndex     = 0;  // which option is currently selected (0..numOptions-1)
+  int windowStart        = 0;  // index of first option shown on row 1
+  int lastWindowStart    = -1;
+  int lastSelectionIndex = -1;
+
+  // Draw question once
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(question);
+
+  while (true) {
+    // Only redraw if window or selection changed
+    if (windowStart != lastWindowStart || selectionIndex != lastSelectionIndex) {
+      // Draw visible options
+      for (int line = 0; line < visibleCount; line++) {
+        int optIdx = (windowStart + line) % numOptions;  // wrap through options
+        int row    = 1 + line;                           // LCD row (1,2,3)
+
+        // Arrow at column 0
+        lcd.setCursor(0, row);
+        if (optIdx == selectionIndex) {
+          lcd.print(">");
+        } else {
+          lcd.print(" ");
+        }
+
+        // Option text at column 1
+        lcd.setCursor(1, row);
+        lcd.print(options[optIdx]);
+
+        // Clear rest of the line
+        int len = strlen(options[optIdx]);
+        for (int c = 1 + len; c < 20; c++) {
+          lcd.print(" ");
+        }
+      }
+
+      // Clear unused rows if fewer than 3 options
+      for (int line = visibleCount; line < maxVisible; line++) {
+        int row = 1 + line;
+        lcd.setCursor(0, row);
+        lcd.print("                    "); // 20 spaces
+      }
+
+      lastWindowStart    = windowStart;
+      lastSelectionIndex = selectionIndex;
+    }
+
+    int downState   = digitalRead(movepin);
+    int selectState = digitalRead(choosePin);
+
+    // BOTH buttons pressed at once -> go back (only if allowed)
+    if (allowBack && downState == LOW && selectState == LOW) {
+      // wait until both are released
+      while (digitalRead(movepin) == LOW || digitalRead(choosePin) == LOW) {
+        delay(10);
+      }
+      return -1;  // special value meaning "go back"
+    }
+
+    // Move selection down (with scroll + wrap)
+    if (downState == LOW) {
+      selectionIndex = (selectionIndex + 1) % numOptions;
+
+      // If more options than visible, scroll window down when needed
+      if (numOptions > visibleCount) {
+        int bottomNext = (windowStart + visibleCount) % numOptions;
+        if (selectionIndex == bottomNext) {
+          windowStart = (windowStart + 1) % numOptions;
+        }
+      }
+
+      // Simple debounce: wait for button release
+      while (digitalRead(movepin) == LOW) {
+        delay(10);
+      }
+    }
+    // Select current option
+    else if (selectState == LOW) {
+      while (digitalRead(choosePin) == LOW) {
+        delay(10);
+      }
+      return selectionIndex;   // 0..numOptions-1
+    }
+
+    delay(30); // keep loop responsive but stable
+  }
+}
+
+void setup() {
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+
+  pinMode(movepin,   INPUT_PULLUP);
+  pinMode(choosePin, INPUT_PULLUP);
+
+  Serial.begin(9600);
+
+  // Wait for book config from the Web Serial page
+  waitForConfigFromSerial();
+}
+
+void loop() {
+  // ---------- INSTRUCTION SCREEN (once per run-through) ----------
+  showInstructions();
+
+  // ---------- FIRST MENU: Fiction vs Nonfiction ----------
+  int mainIndex = menuSelectScrollArrow("What do you like?", mainOptions, 2, false);
+  selectedMain  = mainOptions[mainIndex];
+
+  // ---------- SECOND MENU: Categories, with back allowed ----------
+  while (true) {
+    const char*  q2 = "Pick 1 category:";
+    const char** categoryOptions;
+    int          numCategories;
+
+    if (mainIndex == 0) { // Fiction
+      categoryOptions = fictionCategories;
+      numCategories   = sizeof(fictionCategories) / sizeof(fictionCategories[0]);
+    } else {              // Nonfiction
+      categoryOptions = nonFictionCategories;
+      numCategories   = sizeof(nonFictionCategories) / sizeof(nonFictionCategories[0]);
+    }
+
+    int catIndex = menuSelectScrollArrow(q2, categoryOptions, numCategories, true);
+
+    // If user pressed both buttons -> go back to first menu
+    if (catIndex == -1) {
+      mainIndex    = menuSelectScrollArrow("What do you like?", mainOptions, 2, false);
+      selectedMain = mainOptions[mainIndex];
+      continue;
+    }
+
+    // Valid selection
+    selectedCategory = categoryOptions[catIndex];
+    break;
+  }
+
+  // ---------- SHOW TYPE + CATEGORY SUMMARY ----------
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("You chose:");
+
+  lcd.setCursor(0, 1);
+  lcd.print(selectedMain);       // Fiction / Nonfiction
+
+  lcd.setCursor(0, 2);
+  lcd.print(selectedCategory);   // Category
+
+  delay(2000);
+  lcd.clear();
+
+  // ---------- THIRD MENU: Pick a book from configured list ----------
+  const char* matchingTitles[10];   // adjust size if you want more potential matches
+  int numMatches = buildBookList(selectedMain, selectedCategory,
+                                 matchingTitles, 10);
+
+  if (numMatches > 0) {
+    int bookIdx = menuSelectScrollArrow("Pick a book:", matchingTitles, numMatches, false);
+    const char* chosenTitle = matchingTitles[bookIdx];
+
+    // Show final summary with chosen book
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("You chose:");
+
+    lcd.setCursor(0, 1);
+    lcd.print(selectedMain);        // Fiction / Nonfiction
+
+    lcd.setCursor(0, 2);
+    lcd.print(selectedCategory);    // Category
+
+    lcd.setCursor(0, 3);
+    lcd.print(chosenTitle);         // Book title
+
+    delay(5000);
+  } else {
+    // No books for that type+category
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("No books found");
+    lcd.setCursor(0, 1);
+    lcd.print(selectedMain);
+    lcd.setCursor(0, 2);
+    lcd.print(selectedCategory);
+    delay(3000);
+  }
+
+  // After this, loop() restarts → instructions screen appears again
+}
