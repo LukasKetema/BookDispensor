@@ -1,0 +1,71 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+int yesPin = 2;
+int noPin = 3;
+const int num_questions = 5;
+const int string_num = 5;
+const int max_string_length = 25;
+char messages[string_num][max_string_length] = {
+  "Do you like fiction?",
+  "Adventure?",
+  "Romance?",
+  "Question number 1",
+  "Question number 2"
+};
+char answers[num_questions];
+
+void setup() {
+  lcd.init();       // Initialize the LCD
+  lcd.backlight();  // Turn on the backlight
+  lcd.clear();      // Clear any previous text
+  Serial.begin(9600);
+  pinMode(yesPin, INPUT_PULLUP);
+  pinMode(noPin, INPUT_PULLUP);
+};
+
+void loop() {
+  for (int i = 0; i < num_questions; i++) {
+    answers[i] = '?';
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(messages[i]);
+    while (answers[i] == '?') {
+      int yesState = digitalRead(yesPin);
+      int noState = digitalRead(noPin);
+      if (yesState == LOW && noState == HIGH) {
+        answers[i] = 'Y';
+        lcd.setCursor(0, 1);
+        lcd.print("Correct, I do.");
+        delay(800);
+      } else if (yesState == HIGH && noState == LOW) {
+        answers[i] = 'N';
+        lcd.setCursor(0, 1);
+        lcd.print("Incorrect, I don't.");
+        delay(800);
+
+      } else if (yesState == LOW && noState == LOW) {
+        lcd.setCursor(0, 1);
+        lcd.print("Don't press both!");
+        delay(200);
+        lcd.setCursor(0, 1);
+        lcd.print("                    ");
+      }
+    }
+    lcd.setCursor(0, 2);
+    lcd.print("Answer: ");
+    lcd.print(answers[i]);
+    delay(1000);
+  }
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Answers: ");
+
+  lcd.setCursor(0, 1);
+  for (int i = 0; i < num_questions; i++) {
+    lcd.print(answers[i]);
+    lcd.print(' ');
+  }
+  delay(3000);
+};
